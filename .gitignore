@@ -1,0 +1,11 @@
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+.DS_Store
+vine-env/
+test-env/
+.pytest_cache/

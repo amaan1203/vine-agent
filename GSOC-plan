@@ -1,0 +1,443 @@
+# VINE-Agent: Full Architecture & Implementation Plan
+
+> [!IMPORTANT]
+> **No GPU required for POC.** Only a free [Groq API key](https://console.groq.com/) is needed to run the demo.
+
+---
+
+## The Three Core Problems
+
+### Problem 1 — How are sensor + drone data encoded to reach the final LLM?
+
+The key principle: **everything must become structured text** before the LLM sees it, but
+the structure is meaningful — not a dump of raw CSV rows.
+
+#### Sensor Data Encoding Pipeline
+
+```
+IoT Device (every 5 min)
+  → LoRaWAN / MQTT  →  message broker
+  → Kafka topic: vine.sensors.raw          (production)
+  → OR: CSV polling / HTTP webhook         (POC sim)
+
+  ┌─────────────────────────────────────────────────┐
+  │           Sliding Window Feature Extractor      │
+  │                                                 │
+  │  Input: last 48h of readings per block          │
+  │  Computes:                                      │
+  │    - mean / min / max VWC (soil moisture)       │
+  │    - trend: rising | stable | falling           │
+  │    - ET₀ deficit accumulation                   │
+  │    - # hours below irrigation threshold         │
+  │    - heat stress flag (temp > 90°F)             │
+  │    - CO₂ anomaly flag                           │
+  │                                                 │
+  │  Output: SensorContextBlock (structured dict)   │
+  └─────────────────────────────────────────────────┘
+              │
+              ▼
+    ENCODED AS STRUCTURED TEXT BLOCK:
+
+    ╔══════════════════════════════════════════════╗
+    ║  [LIVE SENSOR — Block A, Chardonnay]         ║
+    ║  Window: 2024-07-14 00:00 → 07-15 23:59     ║
+    ║  ─────────────────────────────────────────   ║
+    ║  Soil VWC:  avg=22.4%  min=18.9%  trend=↓   ║
+    ║  Soil Temp: avg=74°F   max=93°F              ║
+    ║  ET₀ deficit: 1.4 in accumulated (2d)        ║
+    ║  Threshold breaches: 14h below 25% VWC       ║
+    ║  ALERTS: ⚠ IRRIGATION_NEEDED, HEAT_STRESS   ║
+    ╚══════════════════════════════════════════════╝
+
+    This block is injected DIRECTLY into the Solver
+    prompt — NOT into RAPTOR.
+    Why? RAPTOR requires O(N²) re-clustering on
+    insert. 5-min sensor ticks would make it unusable.
+    Historical weekly summaries DO go into RAPTOR.
+```
+
+#### Drone Imagery Encoding Pipeline
+
+```
+GeoTIFF upload (every few days, post-flight)
+  → rasterio reads bands: NIR, Red, RedEdge, SWIR
+
+  ┌─────────────────────────────────────────────────┐
+  │            Band Math Engine                     │
+  │                                                 │
+  │  Per zone (grid of ~50x50 px = ~0.5 acre):     │
+  │    NDVI   = (NIR - Red)  / (NIR + Red)         │
+  │    NDRE   = (NIR - RE)   / (NIR + RE)          │
+  │    NDWI   = (NIR - SWIR) / (NIR + SWIR)        │
+  │    stressed_area_pct = pixels where NDVI<0.4   │
+  │    anomaly_clusters  = DBSCAN on low-NDVI cells │
+  └─────────────────────────────────────────────────┘
+              │
+              ├──► Level 1 (POC): NL Text Summary
+              │       → RAPTOR leaf node (nightly rebuild)
+              │
+              ▼
+
+    ╔══════════════════════════════════════════════╗
+    ║  [DRONE — Block A, Chardonnay, 2024-07-15]  ║
+    ║  Flight: Iron Horse West, DJI P4 Multispect  ║
+    ║  ─────────────────────────────────────────   ║
+    ║  NDVI:  mean=0.61  min=0.38  max=0.79        ║
+    ║  NDRE:  mean=0.34  (mild N deficiency zone)  ║
+    ║  NDWI:  mean=0.12  (mild water stress)       ║
+    ║  Stressed area: 18% of block (NDVI < 0.40)  ║
+    ║  Anomaly cluster: 3 rows, NE corner          ║
+    ║  Status: MILD_STRESS | N_DEFICIENCY_RISK     ║
+    ╚══════════════════════════════════════════════╝
+
+              │
+              └──► Level 2 (production/future):
+                     image patches → CLIP encoder →
+                     dense vector → Milvus/Chroma →
+                     retrieved by semantic query →
+                     vision LLM (LLaVA on NRP vLLM)
+                     describes anomaly visually
+```
+
+**Why Level 1 is sufficient for most queries:**
+NDVI/NDRE numbers *are* the agronomic signal. A model seeing "NDVI=0.38 in NE corner"
+can correctly reason about stress. Visual patch embeddings add value only for
+detecting novel anomalies (frost damage patterns, hail, fungal texture) that band stats
+cannot capture. That's Phase 2.
+
+---
+
+### Problem 2 — How does the Planner decide what the LLM focuses on?
+
+The current `AGNO keyword → weights dict` approach is too brittle. Here's the proper design:
+
+#### Context Assembly Blueprint (CAB)
+
+The planner doesn't just generate a retrieval plan — it *also* generates a
+**Context Assembly Blueprint**: explicit instructions to the Solver on how to weight evidence.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    PLANNER NODE OUTPUT                           │
+│                                                                  │
+│  NormalizedQuestion: <self-contained query>                      │
+│                                                                  │
+│  ContextPriority:                                                │
+│    PRIMARY:   sensor_data    # real-time conditions deciding now │
+│    SECONDARY: raptor_kb      # historical protocols & thresholds │
+│    TERTIARY:  drone_imagery  # 3-day-old flight, less urgent     │
+│                                                                  │
+│  Reasoning: "Query asks about immediate irrigation decision.     │
+│    Live VWC data is most relevant. NDVI flight is 3 days old     │
+│    and less urgent. Protocols from KB provide threshold values." │
+│                                                                  │  Plan: Get irrigation thresholds from KB  #E1 = Raptor[...]    │
+│  Plan: Analyze live sensor context         #E2 = LLM[...]       │
+│  Plan: Cross-check with drone stress zone  #E3 = Raptor[...]    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+The `ContextPriority` is parsed by the Context Assembler before the Solver runs.
+The Solver prompt then literally shows:
+
+```
+PRIMARY EVIDENCE (weight your answer on this most):
+[LIVE SENSOR BLOCK — Block A]
+
+SECONDARY EVIDENCE (supporting protocols):
+[RAPTOR retrieved passages]
+
+TERTIARY EVIDENCE (background context):
+[DRONE BLOCK — 3 days ago]
+
+Answer the question using all evidence, prioritizing PRIMARY.
+```
+
+This is far better than keyword heuristics because:
+- The LLM reasons about what's relevant in context of the *specific query*
+- It considers data freshness (3-day-old drone vs. live sensor)
+- It can say "I don't have relevant drone data for this query" explicitly
+
+---
+
+### Problem 3 — Why NOT just pass everything to a plain Groq LLM?
+
+You're right to push back. Here's the honest comparison:
+
+| Approach | Quality | Cost | Effort | Best for |
+|---|---|---|---|---|
+| **A. Groq (POC)** | 60-70% | Free | Zero | Proving the architecture |
+| **B. Groq llama-3.1-70b** | 75-80% | ~$0.001/query | Zero | Good demo quality |
+| **C. LoRA fine-tune Llama-3.1-8B** | 80-90% | ~$50 one-time (NRP GPU) | Medium | **Best production tradeoff** |
+| **D. vLLM on NRP (70B, no fine-tune)** | 80-85% | NRP credits | Low setup | Large-model quality |
+| **E. AgriLLM (domain pre-trained)** | 90%+ | High | High | Ideal long-term |
+
+**Recommended Tiered Strategy:**
+
+```
+Phase 1 (POC — now):
+  Groq llama-3.1-8b-instant
+  Role: ALL nodes (planner, worker, solver, summarizer)
+  Why: Free, fast, proves the pipeline works
+  Weakness: Hallucinates ag-specific details (spray intervals, exact thresholds)
+
+Phase 2 (Better demo):
+  Groq llama-3.1-70b-versatile as SOLVER only
+  llama-3.1-8b-instant for planner/worker/summarizer
+  Why: 70B is dramatically better for synthesis without costing much
+  Cost: ~$0.001 per full query round-trip
+
+Phase 3 (Production POC on NRP):
+  vLLM serving Llama-3.3-70B-Instruct on NRP GPU pod
+  + LoRA adapter fine-tuned on agricultural QA dataset:
+    - USDA agricultural extension publications (open)
+    - AgriQA benchmark dataset (GitHub)
+    - Synthetic VINE-specific QA pairs (you generate these)
+    - Iron Horse Vineyards field records (if available)
+  Fine-tuning approach: QLoRA on 4x A100 (NRP has these)
+  Result: A model that actually KNOWS ag thresholds, not retrieves them
+```
+
+**The key insight on fine-tuning:**
+Fine-tuning doesn't replace RAG — they serve different purposes:
+
+```
+RAG (RAPTOR) answers:  "What is the current VWC threshold?"
+Fine-tuned LLM knows:  "What does a VWC threshold MEAN for Pinot Noir in July?"
+Together they produce:  Correct + contextualized recommendations
+```
+
+A fine-tuned model makes fewer hallucination errors on domain-specific numbers,
+uses correct agronomic terminology, and generates better plans in the Planner node.
+
+---
+
+## Full System Architecture
+
+```
+DATA SOURCES
+────────────────────────────────────────────────────────────────────────
+   IoT Sensors          Drone Flights          Agronomy Docs
+   (every 5 min)        (every few days)       (static + updated)
+        │                     │                       │
+        ▼                     ▼                       ▼
+  ┌──────────┐        ┌──────────────┐        ┌──────────────┐
+  │  MQTT /  │        │  Band Math   │        │  PDF/Text    │
+  │  Kafka   │        │  Engine      │        │  Chunker     │
+  └────┬─────┘        │  NDVI/NDRE   │        └──────┬───────┘
+       │              └──────┬───────┘               │
+       │                     │                       │
+  ┌────▼─────┐    ┌──────────▼──────────┐            │
+  │ Sliding  │    │ DroneContextBlock   │            │
+  │ Window   │    │ (structured text)   │            │
+  │ Extractor│    └──────────┬──────────┘            │
+  └────┬─────┘               │ nightly               │
+       │                  RAPTOR ◄────────────────────┘
+  ┌────▼──────────┐       Tree Build
+  │ SensorContext │       (UMAP + GMM + FAISS index)
+  │ Block (live)  │
+  └────┬──────────┘
+
+QUERY TIME PIPELINE
+────────────────────────────────────────────────────────────────────────
+  User Query
+      │
+      ▼
+  Query Rewriter          ← conversation history via rolling summary
+      │
+      ▼
+  HyDE Expander           ← LLM generates hypothetical agronomic answer
+      │                      to bridge lay language → technical terms
+      ▼
+  FAISS Search            ← retrieve top-N candidates from KB
+      │
+      ▼
+  ColBERT Reranker        ← token-level rerank to top-K
+      │
+      ▼
+  RAPTOR Build            ← cluster + summarize to N-level hierarchy
+  (on retrieved docs)        built fresh per query for precision
+      │
+      ▼
+  ┌────────────────────────────────────┐
+  │         PLANNER (ReWOO)           │
+  │  - Sees: query + RAPTOR tree      │
+  │  - Sees: data availability meta   │
+  │    (sensor freshness, last flight)│
+  │  - Outputs:                       │
+  │    1. Sub-queries (#E1, #E2, ...) │
+  │    2. Context Priority Blueprint  │
+  │       PRIMARY / SECONDARY /       │
+  │       TERTIARY for each source    │
+  └────────────┬───────────────────────┘
+               │
+               ▼
+  ┌────────────────────────────────────┐
+  │           WORKER (ReWOO)          │
+  │  Executes each plan step:         │
+  │  - Raptor[query] → RAPTOR search  │
+  │  - LLM[context] → reasoning step  │
+  │  Fills #E1, #E2, ... with results │
+  └────────────┬───────────────────────┘
+               │
+               ▼
+  ┌───────────────────────────────────────────────────────┐
+  │              CONTEXT ASSEMBLER                        │
+  │                                                       │
+  │  Reads Priority Blueprint from Planner                │
+  │  Assembles final context block in priority order:     │
+  │                                                       │
+  │  PRIMARY:   [SensorContextBlock]  ← live data        │
+  │  SECONDARY: [RAPTOR Evidence]     ← retrieved KB     │
+  │  TERTIARY:  [DroneContextBlock]   ← last flight      │
+  │                                                       │
+  │  Tagged with metadata (freshness, source, confidence) │
+  └────────────┬──────────────────────────────────────────┘
+               │
+               ▼
+  ┌───────────────────────────────────────────────────────┐
+  │                    SOLVER LLM                         │
+  │                                                       │
+  │  Phase 1: groq/llama-3.1-8b-instant                  │
+  │  Phase 2: groq/llama-3.1-70b-versatile (solver only) │
+  │  Phase 3: vLLM on NRP → LoRA fine-tuned Llama-3.1-8B │
+  │           on agricultural QA datasets                  │
+  │                                                       │
+  │  Prompt structure:                                    │
+  │  "Answer using PRIMARY evidence most. Use SECONDARY   │
+  │   for thresholds. TERTIARY provides spatial context.  │
+  │   Cite evidence. Quantify recommendations."           │
+  └────────────┬──────────────────────────────────────────┘
+               │
+               ▼
+         Final Answer
+  (cited, quantified, source-attributed)
+```
+
+---
+
+## Proposed File Changes
+
+### New Files
+
+#### [NEW] `drone_encoder.py`
+- `DroneImageryEncoder`: loads GeoTIFF via rasterio, computes NDVI/NDRE/NDWI per zone
+- `generate_synthetic_ndvi_zones()`: POC simulator (no real GeoTIFF needed)
+- `encode_to_text_blocks()`: returns structured `DroneContextBlock` strings
+
+#### [NEW] `sensor_stream.py`
+- `SlidingWindowExtractor`: computes rolling stats from a CSV or live dict
+- `generate_live_sensor_context()`: POC simulator with realistic values + alerts
+- `SensorContextBlock`: dataclass with `to_prompt_string()` method
+- Production stub: `MQTTSensorClient` connecting to `vine.sensors.raw`
+
+#### [NEW] `context_assembler.py`
+- `ContextAssembler`: parses Planner's `ContextPriority` output
+- `assemble(raptor_evidence, sensor_block, drone_block, priority)` → ordered prompt string
+- Tags each section with `[SOURCE | FRESHNESS | CONFIDENCE]` metadata
+
+### Modified Files
+
+#### [MODIFY] `agent.py`
+- Add `sensor_context: str` and `drone_context: str` to `AgentState`
+- Add `live_context_node`: fetches live sensor + latest drone block (per query time)
+- Modify `planner_node`: receives data freshness metadata, outputs `ContextPriority`
+- Modify `solver_node`: receives assembled context from `ContextAssembler`
+- Update graph: `query_rewrite → live_context → make_raptor → planner → worker → solver → summary`
+
+#### [MODIFY] `prompts.py`
+- `PLANNER_PROMPT`: add `{data_availability}` input (sensor freshness, last drone flight date)
+- `PLANNER_PROMPT`: add explicit instruction to output `ContextPriority:` block
+- `SOLVER_PROMPT`: structured input with `PRIMARY/SECONDARY/TERTIARY` labeled sections
+
+#### [MODIFY] `data_loader.py`
+- Add `generate_synthetic_sensor_csv()` for zero-download POC
+- Add `generate_synthetic_drone_flights()` returning list of `DroneContextBlock` strings
+- Expand knowledge base to 30+ passages
+
+#### [MODIFY] `main.py`
+- Wire in `sensor_stream.py` and `drone_encoder.py`
+- Show `ContextPriority` routing decision in demo output
+- Add `--sensor-stream` flag (MQTT live mode vs CSV polling)
+
+#### [MODIFY] `requirements.txt`
+- Add: `datasets`, `nest-asyncio`, `httpx`, `paho-mqtt` (for live MQTT)
+
+---
+
+## LLM Strategy Implementation
+
+### Phase 1 (This PR — POC)
+```python
+# All nodes use same cheap-fast model
+llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+```
+
+### Phase 2 (Next iteration)
+```python
+# Split: fast model for planning, smart model for synthesis
+planner_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+solver_llm   = ChatGroq(model="llama-3.1-70b-versatile", temperature=0.1)
+```
+
+### Phase 3 (NRP Production)
+```python
+# vLLM serving fine-tuned model on NRP Kubernetes
+# Fine-tune script (separate repo):
+#   base: meta-llama/Llama-3.1-8B-Instruct
+#   method: QLoRA (4-bit, rank=64, alpha=16)
+#   dataset: AgriQA + synthetic VINE QA pairs
+#   compute: 2x A100 on NRP for ~4 hours
+solver_llm = VLLMWrapper(url="http://vllm-service:8000/v1", model="/model")
+```
+
+---
+
+## Verification Plan
+
+```bash
+cd /Users/amaansiddiqui/Desktop/vine-agent
+
+# 1. Install deps
+pip install -r requirements.txt
+
+# 2. Test sensor encoding (no LLM)
+python -c "
+from sensor_stream import SlidingWindowExtractor, generate_live_sensor_context
+ctx = generate_live_sensor_context(n_blocks=3)
+assert 'IRRIGATION' in ctx or 'VWC' in ctx
+print('Sensor encoder OK:', ctx[:200])
+"
+
+# 3. Test drone encoding (no LLM)
+python -c "
+from drone_encoder import DroneImageryEncoder
+enc = DroneImageryEncoder()
+blocks = enc.encode_synthetic_flights(n_blocks=3, n_flights=2)
+assert len(blocks) >= 6 and 'NDVI' in blocks[0]
+print('Drone encoder OK:', blocks[0][:200])
+"
+
+# 4. Test context assembler
+python -c "
+from context_assembler import ContextAssembler
+ca = ContextAssembler()
+ctx = ca.assemble(
+    raptor_evidence='RAPTOR evidence here',
+    sensor_block='Sensor block here',
+    drone_block='Drone block here',
+    priority={'primary': 'sensor', 'secondary': 'raptor', 'tertiary': 'drone'}
+)
+assert 'PRIMARY' in ctx and 'SECONDARY' in ctx
+print('Assembler OK')
+"
+
+# 5. Full end-to-end (needs GROQ_API_KEY in .env)
+python main.py --demo --verbose
+```
+
+### What to observe
+1. ✅ `[ContextPriority]` printed for each query showing routing decision
+2. ✅ Drone and sensor blocks visible in `--verbose` output
+3. ✅ Final answer cites `[LIVE SENSOR]` or `[DRONE]` as source
+4. ✅ RAPTOR tree builds with > 50 nodes (knowledge + historical data)
+5. ✅ Response time < 30s per query on Groq free tier

@@ -1,0 +1,119 @@
+# VINE-Agent v3: Alert Rules Engine Configuration
+# Deterministic thresholds that fire immediately (Layer 1).
+# Rules are evaluated every 5 minutes against the latest 48h sliding window.
+
+rules:
+  # ── IRRIGATION & MOISTURE ───────────────────────────────────────────────
+  - rule_id: critical_moisture_deficit
+    metric: vwc_min
+    operator: lt
+    threshold: 20.0
+    severity: CRITICAL
+    alert_type: IRRIGATION_EMERGENCY
+    cooldown_hours: 4
+    varieties: ["all"]
+    description: "Soil Moisture (VWC) has dropped below absolute critical minimum (20%). High risk of permanent vine damage."
+
+  - rule_id: deficit_irrigation_pinot
+    metric: vwc_mean
+    operator: lt
+    threshold: 23.0
+    severity: HIGH
+    alert_type: DEFICIT_TARGET_APPROACHING
+    cooldown_hours: 12
+    varieties: ["Pinot Noir"]
+    description: "Pinot Noir VWC dipping into deficit Regulated Deficit Irrigation (RDI) target zone. Watch closely."
+
+  - rule_id: deficit_irrigation_cabernet
+    metric: vwc_mean
+    operator: lt
+    threshold: 18.0
+    severity: HIGH
+    alert_type: DEFICIT_TARGET_APPROACHING
+    cooldown_hours: 12
+    varieties: ["Cabernet Sauvignon"]
+    description: "Cabernet Sauvignon requires deeper stress. VWC approaching 18%."
+
+  - rule_id: rapid_drying_trend
+    metric: vwc_trend_slope
+    operator: lt
+    threshold: -0.5  # % VWC drop per hour
+    severity: HIGH
+    alert_type: RAPID_CANOPY_TRANSPIRATION
+    cooldown_hours: 6
+    varieties: ["all"]
+    description: "Soil moisture is crashing >0.5% per hour. High ET0 or a broken irrigation line leak."
+
+  - rule_id: over_irrigation_risk
+    metric: vwc_max
+    operator: gt
+    threshold: 38.0
+    severity: MEDIUM
+    alert_type: OVER_SATURATION
+    cooldown_hours: 24
+    varieties: ["all"]
+    description: "Soil VWC > 38% indicates saturation. Root zone oxygen depletion and Botrytis risk increased."
+
+  # ── TEMPERATURE & HEAT ──────────────────────────────────────────────────
+  - rule_id: extreme_heat_stress
+    metric: temp_max
+    operator: gt
+    threshold: 100.0
+    severity: CRITICAL
+    alert_type: HEAT_STRESS
+    cooldown_hours: 6
+    varieties: ["all"]
+    description: "Air temperature > 100F. Extreme risk of berry sunburn and stomatal closure."
+
+  - rule_id: high_heat_warning
+    metric: temp_max
+    operator: gt
+    threshold: 93.0
+    severity: HIGH
+    alert_type: HEAT_STRESS
+    cooldown_hours: 12
+    varieties: ["all"]
+    description: "Air temperature > 93F. Canopy cooling may be required soon."
+
+  - rule_id: prolonged_heat_exposure
+    metric: heat_hours_above_90
+    operator: gt
+    threshold: 4.0
+    severity: HIGH
+    alert_type: PROLONGED_HEAT
+    cooldown_hours: 12
+    varieties: ["all"]
+    description: "More than 4 hours accumulated above 90F today. Photosynthesis halted."
+
+  # ── FROST ───────────────────────────────────────────────────────────────
+  - rule_id: active_frost_danger
+    metric: temp_min
+    operator: lt
+    threshold: 34.0
+    severity: CRITICAL
+    alert_type: FROST_WARNING
+    cooldown_hours: 1
+    varieties: ["all"]
+    description: "Temperature approaching freezing. Wind machines or sprinklers needed immediately."
+
+  # ── EVAPOTRANSPIRATION (ET0) ────────────────────────────────────────────
+  - rule_id: high_et0_deficit
+    metric: et0_deficit_48h
+    operator: gt
+    threshold: 0.50
+    severity: HIGH
+    alert_type: HIGH_EVAPOTRANSPIRATION
+    cooldown_hours: 12
+    varieties: ["all"]
+    description: "Accumulated ET0 deficit > 0.50 inches in 48h. Vine water loss is severe, replenish soon."
+
+  # ── ANOMALY CATCH-ALL ───────────────────────────────────────────────────
+  - rule_id: co2_anomaly
+    metric: co2_max
+    operator: gt
+    threshold: 600.0
+    severity: MEDIUM
+    alert_type: CO2_ANOMALY
+    cooldown_hours: 24
+    varieties: ["all"]
+    description: "Unusual CO2 spike detected in canopy microclimate."
