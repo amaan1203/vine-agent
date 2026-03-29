@@ -1,9 +1,3 @@
-"""
-VINE-Agent v3: Proactive Agent Pipeline
-Triggered by the Rule Engine. Takes an Alert, constructs a context-aware query,
-and runs the Planner -> ContextAssembler -> Recommender pipeline to produce a recommendation.
-"""
-
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -17,19 +11,12 @@ from raptor import Raptor
 import re
 import threading
 
-# Global mutex protecting all FAISS / embedding calls.
-# FAISS + HuggingFace BGE are NOT thread-safe on Apple Silicon (MKL segfaults).
-# All threads that call raptor_tree.retrieve_collapsed() must acquire this lock first.
+
 _EMBED_LOCK = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
 class ProactivePipeline:
-    """
-    Automated execution of the VINE-Agent. 
-    Unlike the conversational chatbot, this skips query rewrite and chat history,
-    focusing purely on formulating a plan and executing the recommender.
-    """
 
     def __init__(
         self,
@@ -55,10 +42,6 @@ class ProactivePipeline:
         self.raptor_top_k = raptor_top_k
 
     def generate_recommendation_for_alert(self, alert: Alert) -> Alert:
-        """
-        Main entry point for autonomous reasoning.
-        Enriches an Alert object with a specific recommendation and reasoning.
-        """
         logger.info(f"[PROACTIVE PIPELINE] intercepting {alert.severity} alert on Block {alert.block}")
         logger.info(f"[PROACTIVE PIPELINE] Alert Details: {alert.alert_type} | Metric: {alert.metric_name}={alert.metric_value} (Threshold: {alert.threshold_value})")
         

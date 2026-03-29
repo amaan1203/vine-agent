@@ -1,11 +1,3 @@
-"""
-VINE-Agent v3: API Server
-FastAPI layer providing REST endpoints for Dashboard interaction:
-- GET /api/v1/alerts
-- GET /api/v1/sensor/{block}
-- POST /api/v1/query
-"""
-
 import logging
 import asyncio
 from typing import Dict, Any
@@ -16,7 +8,6 @@ from alert_store import AlertStore
 
 logger = logging.getLogger(__name__)
 
-# Singletons (Injected via main.py in production)
 alert_store = AlertStore()
 query_pipeline = None         # Set by main.py
 sensor_context_fn = None      # Set by main.py
@@ -42,11 +33,8 @@ class QueryRequest(BaseModel):
     query: str
 
 
-# ── REST ENDPOINTS ────────────────────────────────────────────────────────
-
 @app.get("/api/v1/alerts")
 def get_alerts(limit: int = 50):
-    """Fetch recent, ongoing CRITICAL/HIGH alerts for dashboard."""
     try:
         data = alert_store.get_active_alerts(limit=limit)
         return {"count": len(data), "alerts": data}
@@ -57,10 +45,6 @@ def get_alerts(limit: int = 50):
 
 @app.get("/api/v1/alerts/enriched")
 def get_enriched_alerts(limit: int = 20):
-    """
-    Fetch only alerts that have a completed LLM recommendation.
-    These are alerts where the enrichment thread has fully finished.
-    """
     try:
         import sqlite3
         with sqlite3.connect(alert_store.sqlite_path) as conn:
@@ -77,9 +61,6 @@ def get_enriched_alerts(limit: int = 20):
 
 @app.get("/api/v1/status")
 def get_system_status():
-    """
-    Full autonomous system health summary.
-    """
     try:
         import sqlite3
         with sqlite3.connect(alert_store.sqlite_path) as conn:
@@ -105,7 +86,6 @@ def get_system_status():
 
 @app.get("/api/v1/sensor/{block}")
 def get_sensor(block: str):
-    """Fetch the latest sliding window for a specific block (Stub)."""
     # In production, this pulls from Redis
     if sensor_context_fn:
         return {"block": block, "sensor_context": sensor_context_fn()}
@@ -114,10 +94,6 @@ def get_sensor(block: str):
 
 @app.post("/api/v1/query")
 def submit_query(req: QueryRequest):
-    """
-    On-Demand Querying. 
-    Routes the user question through the Alert-Aware QueryAgent.
-    """
     if not query_pipeline:
         raise HTTPException(status_code=503, detail="Query agent not initialized.")
     
@@ -129,8 +105,6 @@ def submit_query(req: QueryRequest):
         logger.error(f"Query failure: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ── WEBSOCKET (Live Push) ──────────────────────────────────────────────────
 
 class ConnectionManager:
     def __init__(self):
@@ -151,10 +125,6 @@ manager = ConnectionManager()
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    Real-time push channel.
-    The ProactivePipeline triggers manager.broadcast() when new alerts form.
-    """
     await manager.connect(websocket)
     try:
         while True:

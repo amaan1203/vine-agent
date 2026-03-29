@@ -1,16 +1,3 @@
-"""
-VINE-Agent: Agricultural Data Loader (v2)
-==========================================
-Loads and prepares data from multiple sources for the VINE knowledge base:
-  1. Built-in synthetic agricultural knowledge (30+ passages, always available)
-  2. Sensor CSV files → weekly NL summaries → RAPTOR leaf nodes
-  3. Drone imagery text blocks → RAPTOR leaf nodes
-  4. Custom text/PDF documents from disk
-  5. HuggingFace agricultural datasets (optional)
-
-All sources converge to List[str] of text chunks for RAPTOR + FAISS indexing.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -23,9 +10,6 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Built-in Synthetic Agricultural Knowledge Base (30+ passages)
-# ─────────────────────────────────────────────────────────────────────────────
 
 SYNTHETIC_AGRO_KNOWLEDGE = [
     # ── Irrigation & Soil Moisture ──────────────────────────────────────────
@@ -496,9 +480,6 @@ def sensor_csv_to_summaries(
     return summaries
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Plain Text / PDF Document Loader
-# ─────────────────────────────────────────────────────────────────────────────
 
 def load_text_docs(directory: str, extensions: tuple = (".txt", ".md")) -> List[str]:
     """Load plain text or markdown files from a directory, chunk into ~512-word passages."""
@@ -551,9 +532,6 @@ def _chunk_text(text: str, chunk_size: int = 512, overlap: int = 64) -> List[str
     return chunks
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. HuggingFace Agricultural Dataset Loader
-# ─────────────────────────────────────────────────────────────────────────────
 
 def load_hf_agro_dataset(
     dataset_name: str = "rag-datasets/rag-mini-bioasq",
@@ -578,10 +556,6 @@ def load_hf_agro_dataset(
         logger.warning(f"HuggingFace dataset load failed ({e}). Using synthetic data only.")
         return []
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Main Builder — Aggregate all sources
-# ─────────────────────────────────────────────────────────────────────────────
 
 def build_vine_knowledge_base(
     docs_dir: Optional[str] = None,

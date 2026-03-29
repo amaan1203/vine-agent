@@ -1,35 +1,3 @@
-"""
-VINE-Agent: Drone Imagery Encoding Module
-==========================================
-Converts multispectral drone imagery (GeoTIFF) into structured text blocks
-suitable for RAPTOR indexing and LLM reasoning.
-
-Architecture role:
-  - DroneImageryEncoder: loads GeoTIFFs via rasterio, computes per-zone band math
-  - DroneContextBlock: structured, LLM-ready text block per block per flight
-  - generate_synthetic_ndvi_zones(): POC simulator (no real GeoTIFF needed)
-  - encode_to_text_blocks(): List[DroneContextBlock] → List[str] for RAPTOR
-
-Encoding strategy (two levels):
-  Level 1 (POC): GeoTIFF → band math → per-zone stats → NL text → RAPTOR leaf node
-  Level 2 (future): image patches → CLIP embeddings → Chroma/Milvus vector store
-                    → vision LLM (LLaVA on NRP vLLM) describes anomalies visually
-
-Why Level 1 is sufficient for most agricultural queries:
-  NDVI/NDRE numbers capture the agronomic signal. A model seeing NDVI=0.38
-  in NE corner can correctly reason about water stress. Visual patch embeddings
-  add value only for novel anomalies (frost damage, hail, fungal texture)
-  that band statistics cannot describe — that is Phase 2.
-
-Bands expected in GeoTIFF:
-  Band 1: Blue   (450nm)
-  Band 2: Green  (560nm)
-  Band 3: Red    (660nm)
-  Band 4: RedEdge (717nm)
-  Band 5: NIR    (840nm)
-  Band 6: SWIR   (optional, for NDWI)
-"""
-
 from __future__ import annotations
 
 import logging
@@ -44,43 +12,33 @@ logger = logging.getLogger(__name__)
 random.seed(42)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DroneContextBlock: one flight × one vineyard block
-# ─────────────────────────────────────────────────────────────────────────────
-
 @dataclass
 class DroneContextBlock:
-    """
-    Per-zone spectral statistics from one drone flight over one vineyard block.
-    Serialises to an LLM-consumable text block that becomes a RAPTOR leaf node.
-    """
     block: str
     variety: str
     flight_date: str
     drone_model: str = "DJI Phantom 4 Multispectral"
 
-    # Spectral indices (mean ± std across zone pixels)
+    
     ndvi_mean: float = 0.65
     ndvi_std:  float = 0.08
     ndvi_min:  float = 0.45
     ndre_mean: float = 0.38
     ndre_std:  float = 0.06
-    ndwi_mean: float = 0.15   # Normalized Difference Water Index
+    ndwi_mean: float = 0.15   
 
-    # Stress zone analysis
-    stressed_area_pct: float = 0.0   # % of zone with NDVI < 0.40
-    severe_stress_pct: float = 0.0   # % with NDVI < 0.30
-    anomaly_clusters: int   = 0      # DBSCAN-detected anomaly patches
-    anomaly_location: str   = ""     # e.g. "NE corner, 3 rows"
+    
+    stressed_area_pct: float = 0.0  
+    severe_stress_pct: float = 0.0   
+    anomaly_clusters: int   = 0      
+    anomaly_location: str   = ""     
 
-    # Derived status labels
-    ndvi_status: str  = "HEALTHY"    # HEALTHY | MILD_STRESS | MODERATE | SEVERE
-    ndre_status: str  = "ADEQUATE"   # ADEQUATE | MILD_N_DEFICIENCY | SEVERE_N_DEFICIENCY
-    water_status: str = "NORMAL"     # NORMAL | MILD_STRESS | HIGH_STRESS
+    
+    ndvi_status: str  = "HEALTHY"    
+    ndre_status: str  = "ADEQUATE"   
+    water_status: str = "NORMAL"     
 
     def compute_status_labels(self):
-        """Derive agronomic status labels from spectral index values."""
-        # NDVI thresholds (viticulture-specific)
         if self.ndvi_mean >= 0.65:
             self.ndvi_status = "HEALTHY"
         elif self.ndvi_mean >= 0.50:
@@ -107,14 +65,14 @@ class DroneContextBlock:
             self.water_status = "HIGH_WATER_STRESS"
 
     def to_prompt_string(self) -> str:
-        """Format as a clearly labelled, LLM-readable block for RAPTOR / Solver."""
+       
         alert_parts = []
         if self.ndvi_status not in ("HEALTHY",):
-            alert_parts.append(f"⚠ {self.ndvi_status}")
+            alert_parts.append(f"{self.ndvi_status}")
         if "DEFICIENCY" in self.ndre_status:
-            alert_parts.append(f"⚠ {self.ndre_status}")
+            alert_parts.append(f"{self.ndre_status}")
         if "STRESS" in self.water_status:
-            alert_parts.append(f"⚠ {self.water_status}")
+            alert_parts.append(f"{self.water_status}")
         alert_str = "  ".join(alert_parts) if alert_parts else "✓ No major alerts"
 
         anomaly_str = (
@@ -142,16 +100,10 @@ class DroneContextBlock:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DroneImageryEncoder: GeoTIFF → DroneContextBlock
-# ─────────────────────────────────────────────────────────────────────────────
 
 class DroneImageryEncoder:
     """
     Converts multispectral GeoTIFF drone imagery into DroneContextBlock objects.
-
-    For POC: uses generate_synthetic_ndvi_zones() to simulate flights.
-    For production: use load_geotiff_zone_stats() with real GeoTIFF files.
     """
 
     def __init__(self, zone_grid: Tuple[int, int] = (4, 4)):
@@ -161,7 +113,7 @@ class DroneImageryEncoder:
         """
         self.zone_grid = zone_grid
 
-    # ─── Production: GeoTIFF → statistics ───────────────────────────────────
+    # ───GeoTIFF → statistics ───────────────────────────────────
 
     def load_geotiff_zone_stats(
         self,
@@ -170,12 +122,6 @@ class DroneImageryEncoder:
         variety: str,
         flight_date: str,
     ) -> DroneContextBlock:
-        """
-        Load a real multispectral GeoTIFF and compute NDVI/NDRE/NDWI per zone.
-        Requires rasterio: pip install rasterio
-
-        Expected band order: Blue, Green, Red, RedEdge, NIR, (SWIR optional)
-        """
         try:
             import rasterio
         except ImportError:
@@ -223,10 +169,6 @@ class DroneImageryEncoder:
         return ctx
 
     def _detect_anomaly_clusters(self, ndvi: np.ndarray, threshold: float = 0.35) -> int:
-        """
-        Simple connected-components count for severe-stress pixels.
-        Returns approximate number of distinct anomaly clusters.
-        """
         try:
             from scipy.ndimage import label
             mask = (ndvi < threshold).astype(int)
@@ -235,7 +177,6 @@ class DroneImageryEncoder:
         except Exception:
             return int(np.sum(ndvi < threshold) > 0)
 
-    # ─── POC: synthetic flight simulator ─────────────────────────────────────
 
     def generate_synthetic_ndvi_zones(
         self,
@@ -243,12 +184,6 @@ class DroneImageryEncoder:
         n_flights: int = 3,
         start_date: str = "2024-06-01",
     ) -> List[DroneContextBlock]:
-        """
-        Simulate n_flights drone surveys over all vineyard blocks.
-        Returns a list of DroneContextBlock objects (one per block × flight).
-
-        blocks: list of {"block": str, "variety": str} dicts.
-        """
         if blocks is None:
             from sensor_stream import VINEYARD_BLOCKS
             blocks = VINEYARD_BLOCKS
@@ -303,10 +238,6 @@ class DroneImageryEncoder:
         self,
         drone_blocks: List[DroneContextBlock],
     ) -> List[str]:
-        """
-        Convert DroneContextBlock objects to plain text strings.
-        These are fed into RAPTOR as leaf nodes (nightly rebuild).
-        """
         return [block.to_prompt_string() for block in drone_blocks]
 
     def get_latest_flight_summary(

@@ -1,23 +1,4 @@
-"""
-VINE-Agent v3: Main Entrypoint
-Autonomous precision agriculture event loop, REST API, and CLI.
-
-Usage:
-    # 1. Start Autonomous Event Loop + API Server
-    python main.py --serve --port 8000
-
-    # 2. Interactive CLI Chatbot (Alert-Aware)
-    python main.py --chat
-    
-    # 3. Benchmark queries
-    python main.py --demo
-"""
-
 import os
-
-# --- Apple Silicon Threading Fix ---
-# Prevents FAISS/PyTorch from segfaulting or deadlocking when called inside
-# daemon background threads (e.g. from the APScheduler enrichment loop)
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"

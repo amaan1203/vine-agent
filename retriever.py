@@ -1,16 +1,3 @@
-"""
-VINE-Agent: Hybrid Retriever (ColBERT + FAISS + HyDE)
-
-Pipeline:
-  1. HyDE expands the query → hypothetical embedding
-  2. FAISS retrieves top-1000 candidates using that embedding
-  3. ColBERT (via RAGatouille) re-ranks to top-k
-  4. Final docs passed to Raptor constructor in agent.py
-
-Ported from ReCOR-RAG (make_raptor node + colbert_reranker function),
-extended with HyDE integration.
-"""
-
 from __future__ import annotations
 import logging
 import sys
@@ -26,10 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 def _patch_ragatouille():
-    """
-    Compatibility shim required by RAGatouille for older LangChain versions.
-    Directly ported from ReCOR-RAG answer-generation.ipynb.
-    """
     from langchain_core.documents.compressor import BaseDocumentCompressor
     fake_module = types.ModuleType("langchain.retrievers.document_compressors.base")
     fake_module.BaseDocumentCompressor = BaseDocumentCompressor
@@ -58,12 +41,6 @@ def colbert_reranker(
     k: int = 100,
     reranker_model=None,
 ) -> List[Dict]:
-    """
-    Re-rank documents using ColBERT late-interaction scoring.
-    Returns top-k dicts with 'content' and 'score'.
-
-    If reranker_model is None, returns documents unchanged (fallback mode).
-    """
     if reranker_model is None:
         logger.warning("[RETRIEVER] ColBERT model not available — returning documents unranked.")
         texts = [d if isinstance(d, str) else d.get("content", str(d)) for d in documents]
@@ -80,15 +57,6 @@ def colbert_reranker(
 
 
 class VINERetriever:
-    """
-    Hybrid retriever for VINE-Agent.
-
-    Combines:
-      - HyDE: bridging lay language → technical agronomic embedding space
-      - FAISS: fast approximate NN search over the knowledge base
-      - ColBERT: late-interaction token-level re-ranking for precision
-    """
-
     def __init__(
         self,
         faiss_store: FAISS,
@@ -100,17 +68,6 @@ class VINERetriever:
         use_hyde: bool = True,
         n_hyde_hypotheticals: int = 1,
     ):
-        """
-        Args:
-            faiss_store:          Pre-built LangChain FAISS store (from data_loader.py).
-            embed_model:          Embedding model (same used to build the store).
-            llm:                  LLM used by HyDE to generate hypotheticals.
-            colbert_model:        RAGatouille ColBERT instance (or None to skip).
-            faiss_k:              Initial FAISS candidate count.
-            colbert_k:            Final documents after ColBERT re-ranking.
-            use_hyde:             Enable HyDE expansion (default True).
-            n_hyde_hypotheticals: Number of hypotheticals to average in HyDE.
-        """
         self.faiss_store = faiss_store
         self.embed_model = embed_model
         self.colbert_model = colbert_model
@@ -128,13 +85,7 @@ class VINERetriever:
             self.hyde = None
 
     def retrieve(self, query: str) -> List[str]:
-        """
-        Full retrieval pipeline:
-          1. (Optional) HyDE expansion
-          2. FAISS candidate retrieval
-          3. ColBERT re-ranking
-          Returns list of text strings for RAPTOR to index.
-        """
+      
         # Step 1: Query → embedding (HyDE or standard)
         logger.info(f"[RETRIEVER] Starting retrieval for query: {query[:50]}...")
         if self.use_hyde and self.hyde is not None:
@@ -168,10 +119,6 @@ class VINERetriever:
         embed_model,
         save_path: Optional[str] = None,
     ) -> FAISS:
-        """
-        Utility: build a FAISS store from a list of text strings.
-        Optionally save to disk.
-        """
         docs = [Document(page_content=t) for t in texts]
         store = FAISS.from_documents(docs, embed_model)
         if save_path:

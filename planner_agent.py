@@ -1,10 +1,3 @@
-"""
-VINE-Agent v3: The Planner Agent
-The "brain" of the autonomous system. Intercepts both Automated Triggers
-(from Rule Engine) and User Queries. Decides what context (Sensor, Drone, RAPTOR)
-is required, outputting a Context Assembly Blueprint (CAB) and a ReWOO evidence plan.
-"""
-
 import logging
 from typing import Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -15,10 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class PlannerAgent:
-    """
-    Evaluates inputs (Triggers or Queries) and formulates an evidence-gathering plan.
-    Outputs the ReWOO PlanString and the parsed ContextPriority object.
-    """
 
     def __init__(self, llm):
         """Pass a LangChain LLM instance (e.g., ChatGroq)."""

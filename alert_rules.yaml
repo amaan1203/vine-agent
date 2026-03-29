@@ -1,9 +1,4 @@
-# VINE-Agent v3: Alert Rules Engine Configuration
-# Deterministic thresholds that fire immediately (Layer 1).
-# Rules are evaluated every 5 minutes against the latest 48h sliding window.
-
 rules:
-  # ── IRRIGATION & MOISTURE ───────────────────────────────────────────────
   - rule_id: critical_moisture_deficit
     metric: vwc_min
     operator: lt
@@ -54,7 +49,6 @@ rules:
     varieties: ["all"]
     description: "Soil VWC > 38% indicates saturation. Root zone oxygen depletion and Botrytis risk increased."
 
-  # ── TEMPERATURE & HEAT ──────────────────────────────────────────────────
   - rule_id: extreme_heat_stress
     metric: temp_max
     operator: gt
@@ -85,7 +79,7 @@ rules:
     varieties: ["all"]
     description: "More than 4 hours accumulated above 90F today. Photosynthesis halted."
 
-  # ── FROST ───────────────────────────────────────────────────────────────
+
   - rule_id: active_frost_danger
     metric: temp_min
     operator: lt
@@ -96,7 +90,7 @@ rules:
     varieties: ["all"]
     description: "Temperature approaching freezing. Wind machines or sprinklers needed immediately."
 
-  # ── EVAPOTRANSPIRATION (ET0) ────────────────────────────────────────────
+
   - rule_id: high_et0_deficit
     metric: et0_deficit_48h
     operator: gt
@@ -107,7 +101,7 @@ rules:
     varieties: ["all"]
     description: "Accumulated ET0 deficit > 0.50 inches in 48h. Vine water loss is severe, replenish soon."
 
-  # ── ANOMALY CATCH-ALL ───────────────────────────────────────────────────
+
   - rule_id: co2_anomaly
     metric: co2_max
     operator: gt

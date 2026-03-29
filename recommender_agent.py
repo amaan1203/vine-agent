@@ -1,10 +1,3 @@
-"""
-VINE-Agent v3: Recommender Agent
-The final synthesis stage. Receives the Planner's executed step map (evidence) and 
-the Assembled Context Block (multi-modal prioritized data).
-Outputs the final actionable recommendation (for alerts) or conversational answer (for queries).
-"""
-
 import logging
 import re
 from typing import Dict, List, Optional
@@ -15,10 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class RecommenderAgent:
-    """
-    Synthesizes the prioritized context into the final Answer/Recommendation.
-    Uses the SOLVER_PROMPT logic from v2, but decoupled from the graphing loop.
-    """
 
     def __init__(self, llm):
         """Pass a LangChain LLM instance (e.g., vLLM or ChatGroq)."""
@@ -32,10 +21,7 @@ class RecommenderAgent:
         assembled_context: str,
         summary: str = "",
     ) -> str:
-        """
-        Takes the resolved evidence + multi-modal context block.
-        Returns the final synthesized output.
-        """
+     
         logger.info("Recommender Agent synthesizing final answer...")
 
         # Reconstruct plan with filled evidence (for plan_evidence field)

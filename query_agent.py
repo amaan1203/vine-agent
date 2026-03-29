@@ -1,9 +1,3 @@
-"""
-VINE-Agent v3: Alert-Aware Query Agent
-The conversational interface for on-demand vineyard manager questions.
-Injects current active alerts from the AlertStore into the cognitive context.
-"""
-
 import logging
 import re
 from datetime import datetime
@@ -20,11 +14,6 @@ from alert_store import AlertStore
 logger = logging.getLogger(__name__)
 
 class AlertAwareQueryAgent:
-    """
-    On-Demand questioning pipeline. Similar to the Proactive pipeline,
-    but retrieves AlertStore status to give context-aware answers.
-    """
-
     def __init__(
         self,
         llm,
@@ -52,9 +41,6 @@ class AlertAwareQueryAgent:
         self.summary = "" # Rolling conversation memory
 
     def chat(self, user_query: str) -> Dict:
-        """
-        Main entry point for interactive queries.
-        """
         logger.info(f"[QUERY AGENT] Processing user query: {user_query}")
         
         # 1. Fetch current active alerts

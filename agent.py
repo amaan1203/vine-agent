@@ -1,21 +1,5 @@
-"""
-VINE-Agent: ReWOO LangGraph Pipeline (v2)
-==========================================
-Full rewrite with multi-modal context fusion:
-  - AgentState extended with sensor_context, drone_context, context_priority
-  - New live_context_node: fetches live sensor + latest drone blocks before planning
-  - Planner emits ContextPriority blueprint alongside the ReWOO plan
-  - Context Assembler orders PRIMARY/SECONDARY/TERTIARY evidence sections
-  - Solver receives assembled multi-modal context block
-  - AIMessage (not HumanMessage) wraps the final answer
-
-Graph:
-  START → query_rewrite → live_context → make_raptor
-        → planner → worker → solver → summary → END
-"""
 
 from __future__ import annotations
-
 import logging
 import re
 from collections import defaultdict, deque
@@ -39,11 +23,6 @@ from retriever import VINERetriever
 
 logger = logging.getLogger(__name__)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# State
-# ─────────────────────────────────────────────────────────────────────────────
-
 class SubQueryResult(TypedDict):
     node_ids: List[str]
     sub_query: str
@@ -65,26 +44,20 @@ class AgentState(TypedDict):
     node_ids: List[str]
 
     # Multi-modal live context
-    sensor_context: str       # Formatted SensorContextBlock strings (live)
-    drone_context: str        # Formatted DroneContextBlock strings (latest flight)
-    last_flight_date: str     # ISO date string of most recent drone flight
-    data_availability: str    # Human-readable summary of data freshness for Planner
+    sensor_context: str      
+    drone_context: str        
+    last_flight_date: str     
+    data_availability: str   
 
-    # Context priority (parsed from planner output)
-    context_priority: Optional[Dict]   # {"primary": ..., "secondary": ..., "tertiary": ...}
-
-    # Assembled multi-modal context (built just before Solver)
+   
+    context_priority: Optional[Dict]   
     assembled_context: str
 
-    # Intermediate
+   
     sub_queries: List[SubQueryResult]
     sub_queries_context: str
     unique_query: str
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper: leaf-node traversal from RAPTOR adjacency
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_leaf_nodes(node_ids: List[str], adj: Dict[str, List[str]]) -> List[str]:
     """DFS to collect leaf nodes reachable from given node_ids."""
@@ -106,9 +79,6 @@ def get_leaf_nodes(node_ids: List[str], adj: Dict[str, List[str]]) -> List[str]:
     return list(leaves)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# VINEAgent class
-# ─────────────────────────────────────────────────────────────────────────────
 
 class VINEAgent:
     """
@@ -130,8 +100,8 @@ class VINEAgent:
         embed_model,
         raptor_k: int = 100,
         raptor_top_k: int = 10,
-        sensor_context_fn=None,      # Callable[[], str] → live sensor context string
-        drone_blocks=None,            # List[DroneContextBlock] for latest flight
+        sensor_context_fn=None,      
+        drone_blocks=None,            
         last_flight_date: str = "",
     ):
         self.llm = llm
@@ -144,8 +114,7 @@ class VINEAgent:
         self.last_flight_date = last_flight_date
         self._context_assembler = ContextAssembler()
 
-    # ─── Node: Query Rewrite ──────────────────────────────────────────────────
-
+   
     def query_rewrite_node(self, state: AgentState) -> AgentState:
         """Resolve follow-up query pronouns/references using conversation summary."""
         summary = state.get("summary", "")
@@ -165,17 +134,11 @@ class VINEAgent:
         logger.info(f"[AGENT] Query rewritten: {new_query[:80]}…")
         return {**state}
 
-    # ─── Node: Live Context Loader ────────────────────────────────────────────
-
+   
     def live_context_node(self, state: AgentState) -> AgentState:
-        """
-        Fetch live sensor context and latest drone imagery context.
-        Builds data_availability string for the Planner.
-        This runs BEFORE make_raptor so the planner knows what data is fresh.
-        """
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
-        # 1. Sensor context (real-time)
+       
         sensor_ctx = ""
         if self.sensor_context_fn is not None:
             try:
@@ -188,7 +151,7 @@ class VINEAgent:
         else:
             sensor_ctx = "[SENSOR] No live sensor feed configured (POC mode)."
 
-        # 2. Drone context (latest flight)
+       
         drone_ctx = ""
         if self.drone_blocks:
             from drone_encoder import DroneImageryEncoder
@@ -197,7 +160,7 @@ class VINEAgent:
         else:
             drone_ctx = "[DRONE] No drone flight data available."
 
-        # 3. Data availability summary for Planner
+       
         flight_date = self.last_flight_date or "unknown"
         data_avail = (
             f"- Live IoT Sensor Data: AVAILABLE (as of {now_str}, 5-min resolution)\n"
@@ -215,10 +178,10 @@ class VINEAgent:
             "data_availability": data_avail,
         }
 
-    # ─── Node: Make RAPTOR ────────────────────────────────────────────────────
+   
 
     def make_raptor_node(self, state: AgentState) -> AgentState:
-        """HyDE + FAISS → ColBERT → RAPTOR build."""
+       
         query = str(state["messages"][-1].content.strip())
 
         logger.info(f"[AGENT] Building RAPTOR index for query: {query[:50]}...")
@@ -232,12 +195,8 @@ class VINEAgent:
         )
         return {**state, "raptor": raptor}
 
-    # ─── Node: Planner ────────────────────────────────────────────────────────
-
+    
     def planner_node(self, state: AgentState) -> AgentState:
-        """
-        Emit a ReWOO-style evidence-gathering plan + ContextPriority blueprint.
-        """
         question = state["messages"][-1].content
         summary = state.get("summary", "")
         data_availability = state.get("data_availability", "Not available.")
@@ -253,7 +212,7 @@ class VINEAgent:
 
         logger.info(f"[AGENT] Plan generated:\n{result[:300]}…")
 
-        # Parse ContextPriority from plan
+        
         cp = ContextPriority.from_plan_string(result)
         logger.info(f"[AGENT] Context priority: {cp}")
 
@@ -268,14 +227,10 @@ class VINEAgent:
             },
         }
 
-    # ─── Node: Worker ─────────────────────────────────────────────────────────
+    
 
     def worker_node(self, state: AgentState) -> AgentState:
-        """
-        Execute each Plan step:
-          - Raptor[query] → retrieve from RAPTOR collapsed tree
-          - LLM[context] → ask LLM to reason/disambiguate
-        """
+       
         plan_string = state["plan_string"]
         raptor: Raptor = state["raptor"]
         summary = state.get("summary", "")
@@ -331,13 +286,9 @@ class VINEAgent:
 
         return {**state, "evidence": evidence, "node_ids": list(node_ids)}
 
-    # ─── Node: Context Assembler ──────────────────────────────────────────────
+   
 
     def assemble_context_node(self, state: AgentState) -> AgentState:
-        """
-        Build the ordered multi-modal evidence block from Planner's priority blueprint.
-        Runs between Worker and Solver.
-        """
         plan_string = state.get("plan_string", "")
         evidence = state.get("evidence", {})
         sensor_ctx = state.get("sensor_context", "")
@@ -383,7 +334,7 @@ class VINEAgent:
         logger.debug(f"[AGENT] Assembled Context Length: {len(assembled)} chars")
         return {**state, "assembled_context": assembled}
 
-    # ─── Node: Solver ─────────────────────────────────────────────────────────
+    
 
     def solver_node(self, state: AgentState) -> AgentState:
         """Synthesise a cited agricultural recommendation from all evidence."""
@@ -393,7 +344,7 @@ class VINEAgent:
         summary = state.get("summary", "")
         assembled_context = state.get("assembled_context", "")
 
-        # Reconstruct plan with filled evidence (for plan_evidence field)
+        
         full_context = ""
         regex = r"(#E\d+)\s*=\s*(\w+)\s*\[([^\]]+)\]"
         for line in plan_string.split("\n"):
@@ -420,11 +371,10 @@ class VINEAgent:
         else:
             answer_text = str(answer)
 
-        # Use AIMessage for correct conversation role
+        
         return {**state, "messages": [AIMessage(content=answer_text)]}
 
-    # ─── Node: Summary Update ─────────────────────────────────────────────────
-
+    
     def summary_node(self, state: AgentState) -> AgentState:
         """Update rolling conversation memory after each turn."""
         summary = state.get("summary", "")
@@ -432,7 +382,7 @@ class VINEAgent:
         if len(messages) < 2:
             return {**state}
 
-        # Last human message is the query, last AI message is the answer
+        
         query = ""
         answer = ""
         for msg in reversed(messages):
@@ -460,8 +410,7 @@ class VINEAgent:
 
         return {**state, "summary": new_summary}
 
-    # ─── Graph Assembly ───────────────────────────────────────────────────────
-
+    
     def compile(self):
         """
         Build and compile the LangGraph state machine.
@@ -495,9 +444,6 @@ class VINEAgent:
         return graph.compile()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# VINEChatBot: conversational wrapper
-# ─────────────────────────────────────────────────────────────────────────────
 
 class VINEChatBot:
     """Conversational wrapper around compiled VINEAgent graph."""

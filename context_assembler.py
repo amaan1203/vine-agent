@@ -1,27 +1,3 @@
-"""
-VINE-Agent: Context Assembler
-==============================
-Reads the Planner's ContextPriority declaration and assembles the final
-multi-modal context block that the Solver LLM receives.
-
-Architecture role:
-  - Planner emits a `ContextPriority:` block alongside the ReWOO plan
-  - ContextAssembler parses that block and orders evidence sections accordingly:
-      PRIMARY   → full weight, listed first
-      SECONDARY → supporting evidence, listed second
-      TERTIARY  → background context, listed last (can be truncated if long)
-  - Each section is tagged with [SOURCE | FRESHNESS | CONFIDENCE] metadata
-  - The assembled context is injected into the SOLVER_PROMPT
-
-Why explicit priority ordering matters:
-  LLMs show recency bias and position bias. Evidence that appears earlier in a
-  long prompt tends to receive more weight. By ordering sections according to the
-  planner's explicit reasoning, we align LLM attention with the correct priorities:
-    - Real-time sensors should dominate an urgent irrigation decision
-    - Historical RAPTOR knowledge should dominate a general agronomy question
-    - Drone imagery should dominate a canopy health assessment query
-"""
-
 from __future__ import annotations
 
 import logging
@@ -37,22 +13,7 @@ PRIORITY_TIERS = ("primary", "secondary", "tertiary")
 # Valid source keys
 SOURCE_KEYS = ("sensor_data", "raptor_kb", "drone_imagery")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ContextPriority: parsed planner output
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ContextPriority:
-    """
-    Parsed representation of the planner's ContextPriority block.
-
-    Expected planner output format:
-        ContextPriority:
-          PRIMARY: sensor_data
-          SECONDARY: raptor_kb
-          TERTIARY: drone_imagery
-          Reasoning: <natural language explanation>
-    """
 
     def __init__(
         self,
@@ -68,10 +29,6 @@ class ContextPriority:
 
     @classmethod
     def from_plan_string(cls, plan_string: str) -> "ContextPriority":
-        """
-        Parse a ContextPriority block from the planner's output string.
-        Falls back to default (raptor first) if parsing fails.
-        """
         try:
             primary   = cls._extract(plan_string, "PRIMARY",   "raptor_kb")
             secondary = cls._extract(plan_string, "SECONDARY", "sensor_data")
@@ -107,26 +64,7 @@ class ContextPriority:
                 f"secondary={self.secondary!r}, tertiary={self.tertiary!r})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ContextAssembler: build the ordered multi-modal prompt section
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ContextAssembler:
-    """
-    Assembles the final multi-modal evidence block for the Solver prompt.
-
-    Usage:
-        assembler = ContextAssembler()
-        ctx_block = assembler.assemble(
-            raptor_evidence="...",
-            sensor_block="...",
-            drone_block="...",
-            priority=ContextPriority.from_plan_string(plan_string),
-            query_time=datetime.now(),
-            last_flight_date="2024-07-15",
-        )
-        # ctx_block is injected as {assembled_context} in SOLVER_PROMPT
-    """
 
     # Character limit for tertiary section (avoid bloating prompt)
     TERTIARY_TRUNCATE = 800
@@ -141,12 +79,6 @@ class ContextAssembler:
         last_flight_date: Optional[str] = None,
         plan_string: Optional[str] = None,
     ) -> str:
-        """
-        Assemble and order context sections.
-
-        If priority is None and plan_string is provided, parse priority from plan.
-        If both None, default to raptor_kb first.
-        """
         if priority is None and plan_string:
             priority = ContextPriority.from_plan_string(plan_string)
         if priority is None:
@@ -155,14 +87,14 @@ class ContextAssembler:
         now_str = (query_time or datetime.now()).strftime("%Y-%m-%d %H:%M UTC")
         flight_age = self._flight_age_str(last_flight_date)
 
-        # Build metadata tags per source
+        
         metadata = {
             "sensor_data":   f"[SOURCE: Live IoT Sensors | AS OF: {now_str} | FRESHNESS: Real-time]",
             "raptor_kb":     f"[SOURCE: Agricultural Knowledge Base (RAPTOR) | FRESHNESS: Indexed]",
             "drone_imagery": f"[SOURCE: Multispectral Drone Imagery | LAST FLIGHT: {flight_age}]",
         }
 
-        # Map source key → content
+       
         content = {
             "sensor_data":   sensor_block   or "[SENSOR] No live sensor data available.",
             "raptor_kb":     raptor_evidence or "[RAPTOR] No knowledge base evidence retrieved.",
@@ -233,15 +165,9 @@ def tier_name_for(source_key: str) -> str:
     return labels.get(source_key, source_key.upper())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Utility: infer priority from query (fallback when planner doesn't emit CAB)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def infer_priority_from_query(query: str) -> ContextPriority:
-    """
-    Lightweight heuristic fallback: infer context priority from query keywords.
-    Used only if the Planner fails to emit a ContextPriority block.
-    """
     q = query.lower()
 
     sensor_keywords = {"moisture", "vwc", "temperature", "irrigat", "sensor",

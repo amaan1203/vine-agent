@@ -1,9 +1,3 @@
-"""
-VINE-Agent v3: Alert Store (SQLite + Redis)
-Handles durable persistence of triggered alerts, alert lifecycle management,
-and sub-millisecond deduplication (cooldowns) via Redis.
-"""
-
 import json
 import logging
 import sqlite3
@@ -76,14 +70,14 @@ class AlertStore:
             return False
 
     def save_alert(self, alert: Alert):
-        """Save a new alert to SQLite and set the Redis cooldown key."""
+       
         # 1. Deduplication Cache
         key = f"ALERT:{alert.alert_type}:{alert.block}"
         if self.redis_available:
             # Set key with TTL = cooldown_hours * 3600 seconds
             self.redis.setex(key, int(alert.cooldown_hours * 3600), alert.triggered_at.isoformat())
 
-        # 2. Durable Storage
+       
         query = """
         INSERT INTO alerts 
         (alert_id, rule_id, block, variety, severity, alert_type, metric_name, 
@@ -111,7 +105,6 @@ class AlertStore:
         logger.info(f"Saved {alert.severity} alert {alert.alert_id} to store.")
 
     def get_active_alerts(self, limit: int = 50) -> List[dict]:
-        """Fetch ongoing unresolved alerts for the dashboard."""
         query = "SELECT * FROM alerts WHERE status IN ('TRIGGERED', 'ACTIVE') ORDER BY triggered_at DESC LIMIT ?"
         with sqlite3.connect(self.sqlite_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -119,7 +112,6 @@ class AlertStore:
             return [dict(row) for row in cur.fetchall()]
 
     def update_status(self, alert_id: str, new_status: str):
-        """Lifecycle transition: TRIGGERED -> ACKNOWLEDGED -> RESOLVED"""
         query = "UPDATE alerts SET status = ? WHERE alert_id = ?"
         with sqlite3.connect(self.sqlite_path) as conn:
             conn.execute(query, (new_status, alert_id))

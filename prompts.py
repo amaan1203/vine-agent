@@ -1,19 +1,4 @@
-"""
-VINE-Agent: Agricultural-domain specific prompts
-=================================================
-All prompts adapted for precision viticulture / VINE platform.
-
-Key changes from original:
-  - PLANNER_PROMPT now requests a ContextPriority: block alongside the ReWOO plan
-  - SOLVER_PROMPT now accepts a pre-assembled multi-modal context block with
-    PRIMARY / SECONDARY / TERTIARY sections from ContextAssembler
-"""
-
 from langchain_core.prompts import ChatPromptTemplate
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HyDE: Hypothetical Document Expansion
-# ─────────────────────────────────────────────────────────────────────────────
 
 HYDE_PROMPT = ChatPromptTemplate.from_template("""
 You are an expert agronomist and viticulture scientist with deep knowledge of:
